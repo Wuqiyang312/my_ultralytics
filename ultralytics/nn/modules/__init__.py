@@ -102,6 +102,11 @@ from .transformer import (
     TransformerLayer,
 )
 
+from .texture_modules import (
+    TextureMaker,
+    TextureStem
+)
+
 __all__ = (
     "Conv",
     "Conv2",
@@ -179,4 +184,6 @@ __all__ = (
     "TorchVision",
     "Index",
     "A2C2f",
+    "TextureMaker",
+    "TextureStem",
 )
