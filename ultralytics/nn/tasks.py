@@ -1668,7 +1668,7 @@ def parse_model(d, ch, verbose=True):
             A2C2f,
         }
     )
-    for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"] + d["texture_branch"]):  # from, number, module, args
+    for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
         m = (
             getattr(torch.nn, m[3:])
             if "nn." in m
