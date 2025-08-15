@@ -1,74 +1,96 @@
-from ultralytics.nn.modules import Conv
+# ultralytics/nn/modules/texture_modules.py
 import torch
 import torch.nn as nn
 
 
 class TextureMaker(nn.Module):
     """
-    纹理生成模块（早期融合用）
-    作用：在 RGB 图像基础上，增加 Sobel X/Y 方向的纹理特征通道，并调整到指定输出通道数
+    纹理生成模块（早期融合）
+    Ultralytics 解析时会调用 TextureMaker(c1, out_ch)，因此这里的签名需要兼容 (c1, out_ch)。
+    逻辑：输入 x (B, c1, H, W)，计算灰度 -> Sobel X/Y -> 与原始输入拼接 -> 1x1 调整到 out_ch。
     """
-    def __init__(self, out_ch=3):
+    def __init__(self, c1=3, out_ch=3):
         super().__init__()
-        # Sobel 卷积核
+        self.c1 = c1
+        # Sobel 卷积核（固定权重）
         self.sobel_x = nn.Conv2d(1, 1, 3, 1, 1, bias=False)
         self.sobel_y = nn.Conv2d(1, 1, 3, 1, 1, bias=False)
-
-        sobel_x_k = torch.tensor(
-            [[[[-1, 0, 1],
-               [-2, 0, 2],
-               [-1, 0, 1]]]],
-            dtype=torch.float32
-        )
-        sobel_y_k = torch.tensor(
-            [[[[-1, -2, -1],
-               [0,  0,  0],
-               [1,  2,  1]]]],
-            dtype=torch.float32
-        )
-        self.sobel_x.weight.data.copy_(sobel_x_k)
-        self.sobel_y.weight.data.copy_(sobel_y_k)
-
-        # 输出调整到 out_ch
-        self.adjust = nn.Conv2d(5, out_ch, 1, 1, 0)
+        sobel_x_k = torch.tensor([[[[-1, 0, 1],
+                                    [-2, 0, 2],
+                                    [-1, 0, 1]]]]).float()
+        sobel_y_k = torch.tensor([[[[-1, -2, -1],
+                                    [ 0,  0,  0],
+                                    [ 1,  2,  1]]]]).float()
+        with torch.no_grad():
+            self.sobel_x.weight.copy_(sobel_x_k)
+            self.sobel_y.weight.copy_(sobel_y_k)
+        # 拼接后通道为 c1 + 2
+        self.adjust = nn.Conv2d(c1 + 2, out_ch, 1, 1, 0)
 
     def forward(self, x):
-        # 转灰度
+        # 灰度（兼容任意 c1）
         gray = x.mean(1, keepdim=True)
-        # Sobel X/Y
+        # Sobel 边缘
         tx = self.sobel_x(gray)
         ty = self.sobel_y(gray)
-        # 拼接 RGB + 纹理
+        # 拼接原图通道与边缘通道
         fused = torch.cat([x, tx, ty], 1)
-        # 调整通道
         return self.adjust(fused)
 
 
-class TextureStem(nn.Module):
-    """
-    纹理主干模块（中期融合用）
-    作用：对输入纹理图像进行两次下采样卷积提取特征
-    """
-    def __init__(self, out_ch=64):
+class _FixedSobel(nn.Module):
+    """固定 Sobel 提取，输出 2 通道 [gx, gy]"""
+    def __init__(self):
         super().__init__()
-        self.conv = nn.Sequential(
-            Conv(3, out_ch, 3, 2),   # 与 YOLO 主干一致的 Conv 模块
-            Conv(out_ch, out_ch, 3, 2)
-        )
+        self.sobel_x = nn.Conv2d(1, 1, 3, 1, 1, bias=False)
+        self.sobel_y = nn.Conv2d(1, 1, 3, 1, 1, bias=False)
+        sobel_x_k = torch.tensor([[[[-1, 0, 1],
+                                    [-2, 0, 2],
+                                    [-1, 0, 1]]]]).float()
+        sobel_y_k = torch.tensor([[[[-1, -2, -1],
+                                    [ 0,  0,  0],
+                                    [ 1,  2,  1]]]]).float()
+        with torch.no_grad():
+            self.sobel_x.weight.copy_(sobel_x_k)
+            self.sobel_y.weight.copy_(sobel_y_k)
 
     def forward(self, x):
-        return self.conv(x)
+        gray = x.mean(1, keepdim=True)
+        gx = self.sobel_x(gray)
+        gy = self.sobel_y(gray)
+        return torch.cat([gx, gy], 1)  # [B,2,H,W]
 
 
-if __name__ == "__main__":
-    # 测试早期融合
-    tm = TextureMaker(out_ch=3)
-    img = torch.randn(1, 3, 640, 640)  # 假设输入 RGB
-    out_tm = tm(img)
-    print("TextureMaker 输出形状:", out_tm.shape)
+class _BlurPool2d(nn.Module):
+    """
+    轻量 Anti-aliasing 下采样，默认 3x3 avgpool, stride=2, padding=1
+    """
+    def __init__(self, kernel_size=3, stride=2, padding=1):
+        super().__init__()
+        self.pool = nn.AvgPool2d(kernel_size=kernel_size, stride=stride, padding=padding)
 
-    # 测试中期融合
-    ts = TextureStem(out_ch=64)
-    tex_img = torch.randn(1, 3, 640, 640)
-    out_ts = ts(tex_img)
-    print("TextureStem 输出形状:", out_ts.shape)
+    def forward(self, x):
+        return self.pool(x)
+
+
+class TextureStemLite(nn.Module):
+    """
+    轻量纹理干支（中期融合用）
+    签名兼容 Ultralytics：TextureStemLite(c1, c2)
+    主分支：Conv(c1->c2, k=3, s=2, p=1)
+    边缘分支：固定 Sobel -> BlurPool2d 下采样 -> 1x1 映射到 c2
+    输出：主分支 + 边缘分支（同尺度 H/2,W/2, 通道 c2）
+    """
+    def __init__(self, c1, c2):
+        super().__init__()
+        self.main = nn.Conv2d(c1, c2, 3, 2, 1, bias=False)
+        self.bn = nn.BatchNorm2d(c2)
+        self.act = nn.SiLU(inplace=True)
+        self.edge = _FixedSobel()
+        self.edge_down = _BlurPool2d(kernel_size=3, stride=2, padding=1)
+        self.edge_proj = nn.Conv2d(2, c2, 1, bias=False)
+
+    def forward(self, x):
+        y = self.act(self.bn(self.main(x)))            # [B,c2,H/2,W/2]
+        e = self.edge_proj(self.edge_down(self.edge(x)))  # [B,c2,H/2,W/2]
+        return y + e

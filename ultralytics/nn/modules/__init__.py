@@ -104,7 +104,7 @@ from .transformer import (
 
 from .texture_modules import (
     TextureMaker,
-    TextureStem
+    TextureStemLite,
 )
 
 __all__ = (
@@ -185,5 +185,5 @@ __all__ = (
     "Index",
     "A2C2f",
     "TextureMaker",
-    "TextureStem",
+    "TextureStemLite",
 )

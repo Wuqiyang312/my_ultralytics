@@ -13,7 +13,8 @@ import torch.nn as nn
 from ultralytics.nn.autobackend import check_class_names
 from ultralytics.nn.modules import (
     TextureMaker,
-    TextureStem,
+    TextureMaker,
+    TextureStemLite,
     CBAM,
     AIFI,
     C1,
@@ -1612,7 +1613,7 @@ def parse_model(d, ch, verbose=True):
     base_modules = frozenset(
         {
             TextureMaker,
-            TextureStem,
+            TextureStemLite,
             Classify,
             Conv,
             ConvTranspose,
